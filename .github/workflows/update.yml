@@ -1,0 +1,64 @@
+name: Регистър на решенията на КЗЗ
+
+on:
+  schedule:
+    - cron: "37 3 5 * *"        # всеки месец на 5-о число, ~06:37 българско време
+  workflow_dispatch:
+    inputs:
+      all:
+        description: "Мини всички страници (не само новите решения)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Инструмент за стари .doc файлове
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq catdoc
+
+      - name: Тестове на разчитането
+        run: python tests/test_parse.py
+
+      - name: Изтегляне на новите решения
+        continue-on-error: true
+        timeout-minutes: 90
+        run: |
+          set -o pipefail
+          mkdir -p out
+          echo "=== $(date -u '+%F %T') изтегляне ===" >> out/run.log
+          python -u agent/harvest.py ${{ github.event.inputs.all == 'true' && '--all' || '' }} 2>&1 | tee -a out/run.log
+
+      - name: Разчитане и регистър
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          echo "=== $(date -u '+%F %T') регистър ===" >> out/run.log
+          python -u agent/parse.py 2>&1 | tee -a out/run.log
+
+      - name: Записване в хранилището
+        if: always()
+        run: |
+          tail -n 2000 out/run.log > out/run.tmp 2>/dev/null && mv out/run.tmp out/run.log || true
+          git config user.name "kzz-agent"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A data out || true
+          if git diff --cached --quiet; then echo "Няма промени"; else
+            git commit -m "Решения на КЗЗ $(date +%F)"
+            git pull --rebase origin main || true
+            git push
+          fi
