@@ -139,15 +139,22 @@ def field(pat, t, flags=re.I):
     return norm(m.group(1)).strip(" ,.;") if m else ""
 
 
+OBJ_STOP = re.compile(
+    r"(?:,\s*(?:в\s+)?част(?:и)?\s+от\s+поземлен|,\s*поземлен[и]?\s+имот|,\s*(?:в\s+)?землище|,\s*с\s+кое?то\s+се\s+засяга"
+    r"|,\s*с\s+която\s+се\s+засяга|,\s*както\s+следва|,\s*при\s+граници|,\s*местност|\s+по\s+КККР|,\s*имот\s*№"
+    r"|,\s*с\s+площ|,\s*собственост|\n)", re.I)
+
+
 def parse_object(t):
-    m = re.search(r"(?:обект|нуждите на обект)\s*:?\s*(.+?)(?:,\s*(?:част от\s+)?поземлен[и]?\s+имот|,\s*както следва|,\s*при граници|,\s*с\s+площ|\n|$)", t, re.I | re.S)
+    m = re.search(r"(?:обект|нуждите на обект)\s*:?\s*", t, re.I)
     if not m:
         return ""
-    s = norm(m.group(1))
+    rest = t[m.end():]
+    stop = OBJ_STOP.search(rest)
+    s = norm(rest[:stop.start()] if stop else rest[:300])
     s = s.strip(" ,")
-    # махни външните кавички „...“ / "..."
     s = re.sub(r'^[„"“]\s*', "", s)
-    s = re.sub(r'\s*[“"”]$', "", s)
+    s = re.sub(r'\s*[“"”]+$', "", s)
     return s
 
 
@@ -184,7 +191,8 @@ def parse_item(item, section_text):
         irr = "неполивна"
     elif re.search(r"\bполивна\b", t, re.I):
         irr = "поливна"
-    settle = field(r"по\s+(?:КККР|КВС|ПНИ|кадастрална(?:та)?\s+карта|плана)\s+(?:на|за)\s+((?:гр|с)\.\s*[^,;(]+)", t)
+    settle = field(r"по\s+(?:КККР|КВС|ПНИ|кадастрална(?:та)?\s+карта|плана)\s+(?:на|за)\s+((?:гр|с)\.\s*[^,;(]+)", t) or \
+        field(r"землище(?:то)?\s+на\s+((?:гр|с)\.\s*[^,;(]+)", t)
     municipality = "Столична" if re.search(r"Столична\s+община|община\s+Столична|община\s+София\b", t, re.I) else \
         field(r"\bобщина\s+([А-Я][^,;.()]+)", t, 0)
     return {
@@ -199,12 +207,30 @@ def parse_item(item, section_text):
         "built": bool(re.search(r"извършено\s+строителство", t, re.I)),
         "settlement": settle,
         "locality": field(r"местност\s+[„\"“]?([^„“”\",;]+)", t),
-        "district": field(r"\bрайон\s+[„\"“]?([А-Я][^„“”\",;]+)", t, 0),
+        "district": field(r"\b[Рр]айон\s+[„\"“]?([А-Я][а-я]+(?:\s+[А-Яа-я][а-я]+)?)", t, 0),
         "municipality": municipality,
         "province": field(r"\bобласт\s+([А-Я][^,;.()]+)", t, 0),
         "upi": field(r"\(\s*(УПИ[^)]*)\)", t),
         "refs": ["КЗЗ-%s/%s" % (a, b) for a, b in re.findall(r"Решение\s*№\s*КЗЗ\s*[–—-]?\s*(\d+)\s*/\s*(\d{1,2}\.\d{1,2}\.\d{4})", t)],
     }
+
+
+SOFIA_DISTRICTS = ["Средец", "Красно село", "Възраждане", "Оборище", "Сердика", "Подуяне", "Слатина", "Изгрев",
+                   "Лозенец", "Триадица", "Красна поляна", "Илинден", "Надежда", "Искър", "Младост", "Студентски",
+                   "Витоша", "Овча купел", "Люлин", "Връбница", "Нови Искър", "Кремиковци", "Панчарево", "Банкя"]
+
+
+def norm_district(d):
+    """'Овча Купел' -> 'Овча купел', 'Панчерево' -> 'Панчарево', 'Връбница за' -> 'Връбница'."""
+    import difflib
+    if not d:
+        return ""
+    d = re.sub(r"\s+(?:за|област|Столична|община).*$", "", d.strip(), flags=re.I)
+    low = {x.lower(): x for x in SOFIA_DISTRICTS}
+    if d.lower() in low:
+        return low[d.lower()]
+    m = difflib.get_close_matches(d.lower(), list(low), n=1, cutoff=0.8)
+    return low[m[0]] if m else d
 
 
 COLS = ["decision", "date", "item", "action", "identifier", "ekatte", "project_ids", "part_of", "built",
@@ -244,6 +270,16 @@ def main():
     sofia_ekatte = {r["ekatte"] for r in rows if r["municipality"] == "Столична" and r["ekatte"]}
     sofia_ekatte.add("68134")
     sofia = [r for r in rows if r["municipality"] == "Столична" or r["ekatte"] in sofia_ekatte]
+    # районите: нормализирани; за селата (едно землище = един район) – попълнени по землището
+    for r in sofia:
+        r["district"] = norm_district(r["district"]) if r["district"] else ""
+    by_ek = {}
+    for r in sofia:
+        if r["district"] in SOFIA_DISTRICTS and r["ekatte"] and r["ekatte"] != "68134":
+            by_ek.setdefault(r["ekatte"], Counter())[r["district"]] += 1
+    for r in sofia:
+        if not r["district"] and r["ekatte"] in by_ek:
+            r["district"] = by_ek[r["ekatte"]].most_common(1)[0][0]
     for name, data in (("register.csv", rows), ("register_sofia.csv", sofia)):
         with open(os.path.join(DATA, name), "w", encoding="utf-8-sig", newline="") as f:
             w = csv.DictWriter(f, fieldnames=COLS, delimiter=";")
