@@ -158,6 +158,22 @@ def parse_object(t):
     return s
 
 
+PLAN_CODES = r"(?:Ч?И?ПРЗ|Ч?И?ПЗ|ПП|Ч?И?ПР|И?ПУР|ПЗР|ПРП|ЧЗРП|ЧЗРКП)"
+PUP_RE = re.compile(r"\b(С?ПУП)\s*[–—-]?\s*(" + PLAN_CODES + r"(?:\s*(?:и|,)\s*(?:С?ПУП\s*[–—-]?\s*)?" + PLAN_CODES + r")*)\b")
+
+
+def parse_pup(t):
+    """'влязъл в сила ПУП – ПРЗ и ПП' -> 'ПУП-ПРЗ, ПУП-ПП'; 'СПУП – ПЗ' -> 'СПУП-ПЗ'."""
+    out = []
+    for m in PUP_RE.finditer(t):
+        kind = m.group(1)
+        for code in re.findall(PLAN_CODES, m.group(2)):
+            v = f"{kind}-{code}"
+            if v not in out:
+                out.append(v)
+    return ", ".join(out)
+
+
 def project_ids(t):
     out = []
     for m in re.finditer(r"проект(?:ен|ни)\s+идентификатор[и]?\s*([^)/]*)", t, re.I):
@@ -211,6 +227,7 @@ def parse_item(item, section_text):
         "municipality": municipality,
         "province": field(r"\bобласт\s+([А-Я][^,;.()]+)", t, 0),
         "upi": field(r"\(\s*(УПИ[^)]*)\)", t),
+        "pup": parse_pup(t),
         "refs": ["КЗЗ-%s/%s" % (a, b) for a, b in re.findall(r"Решение\s*№\s*КЗЗ\s*[–—-]?\s*(\d+)\s*/\s*(\d{1,2}\.\d{1,2}\.\d{4})", t)],
     }
 
@@ -235,7 +252,7 @@ def norm_district(d):
 
 COLS = ["decision", "date", "item", "action", "identifier", "ekatte", "project_ids", "part_of", "built",
         "area_m2", "category", "irrigation", "object", "settlement", "locality", "district", "municipality",
-        "province", "upi", "refs", "url"]
+        "province", "upi", "pup", "refs", "url"]
 
 
 def main():
@@ -263,7 +280,7 @@ def main():
                     "built": "да" if p["built"] else "", "area_m2": p["area_m2"] or "", "category": p["category"],
                     "irrigation": p["irrigation"], "object": p["object"], "settlement": p["settlement"],
                     "locality": p["locality"], "district": p["district"], "municipality": p["municipality"],
-                    "province": p["province"], "upi": p["upi"], "refs": " ".join(p["refs"]), "url": meta["url"],
+                    "province": p["province"], "upi": p["upi"], "pup": p["pup"], "refs": " ".join(p["refs"]), "url": meta["url"],
                 })
     rows.sort(key=lambda r: (r["date"] or "", r["decision"], int(r["item"])), reverse=True)
     # землищата в Столична община = ЕКАТТЕ, срещнати в точки, които изрично казват „Столична община“
